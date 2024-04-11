@@ -26,10 +26,15 @@ interface OnSyncCallback {
   (options: OnSyncCallbackOptions): void | Promise<void>;
 }
 
+interface RequestSerializer {
+  (request: Request): Promise<Request>;
+}
+
 export interface QueueOptions {
   forceSyncFallback?: boolean;
   maxRetentionTime?: number;
   onSync?: OnSyncCallback;
+  requestSerializer?: RequestSerializer;
 }
 
 interface QueueEntry {
@@ -78,6 +83,7 @@ const convertEntry = (
 class Queue {
   private readonly _name: string;
   private readonly _onSync: OnSyncCallback;
+  private readonly _requestSerializer: RequestSerializer;
   private readonly _maxRetentionTime: number;
   private readonly _queueStore: QueueStore;
   private readonly _forceSyncFallback: boolean;
@@ -99,6 +105,10 @@ class Queue {
    *     When not set the `replayRequests()` method is called.
    *     Note: if the replay fails after a sync event, make sure you throw an
    *     error, so the browser knows to retry the sync event later.
+   * @param {Function} [options.requestSerializer] A function that receives a
+   *    request and returns a serialized version of that request. This
+   *    serialized version will be stored in IndexedDB. Use this to store
+   *    custom data along with the request, or to encrypt the request body.
    * @param {number} [options.maxRetentionTime=7 days] The amount of time (in
    *     minutes) a request may be retried. After this amount of time has
    *     passed, the request will be deleted from the queue.
@@ -111,7 +121,12 @@ class Queue {
    */
   constructor(
     name: string,
-    {forceSyncFallback, onSync, maxRetentionTime}: QueueOptions = {},
+    {
+      forceSyncFallback,
+      onSync,
+      requestSerializer,
+      maxRetentionTime,
+    }: QueueOptions = {},
   ) {
     // Ensure the store name is not already being used
     if (queueNames.has(name)) {
@@ -122,6 +137,8 @@ class Queue {
 
     this._name = name;
     this._onSync = onSync || this.replayRequests;
+    this._requestSerializer =
+      requestSerializer || this.defaultRequestSerializer;
     this._maxRetentionTime = maxRetentionTime || MAX_RETENTION_TIME;
     this._forceSyncFallback = Boolean(forceSyncFallback);
     this._queueStore = new QueueStore(this._name);
@@ -277,7 +294,10 @@ class Queue {
     {request, metadata, timestamp = Date.now()}: QueueEntry,
     operation: 'push' | 'unshift',
   ): Promise<void> {
-    const storableRequest = await StorableRequest.fromRequest(request.clone());
+    const serializedRequest = await this._requestSerializer(request);
+    const storableRequest = await StorableRequest.fromRequest(
+      serializedRequest.clone(),
+    );
     const entry: UnidentifiedQueueStoreEntry = {
       requestData: storableRequest.toObject(),
       timestamp,
@@ -385,6 +405,10 @@ class Queue {
           `replayed; the queue is now empty!`,
       );
     }
+  }
+
+  async defaultRequestSerializer(request: Request): Promise<Request> {
+    return request;
   }
 
   /**
